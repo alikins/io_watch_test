@@ -42,13 +42,17 @@ paths = ['/quartz-scheduler/quartz/2.1.5/quartz-2.1.5-sources.jar',
 
 
 class GobjectHTTPResponse(httplib.HTTPResponse):
-    def __init__(self, *args, **kwargs):
-        httplib.HTTPResponse.__init__(self, *args, **kwargs)
-        self.setup_callbacks(*args)
+    def __init__(self, sock, *args, **kwargs):
+        httplib.HTTPResponse.__init__(self, sock, *args, **kwargs)
         self.content = ""
+        self.count = 0
         log.debug("self.fp %s" % self.fp)
+        log.debug("sock %s" % sock)
+        sock.setblocking(False)
+        self.setup_callbacks(*args)
 
     def http_callback(self, source, condition, *args):
+        #print ".",
         #log.debug("http_callback args %s %s %s" % (source, condition, self.length))
         #path, http_conn, http_response, str(args)
         #print source, path
@@ -77,8 +81,17 @@ class GobjectHTTPResponse(httplib.HTTPResponse):
         #self.finished()
         return False
 
+    def timeout_callback(self):
+        self.count += 1
+        if self.isclosed():
+            print "request hit timeout %s times" % self.count
+            return False
+        #print "timeout: %s" % self.count
+        return True
+
     def setup_callbacks(self, *args):
         self.http_src = gobject.io_add_watch(self.fp, gobject.IO_IN, self.http_callback, *args)
+        self.timeout_src = gobject.timeout_add(100, self.timeout_callback)
 
 
 class GobjectHTTPConnection(httplib.HTTPConnection):
@@ -88,8 +101,9 @@ class GobjectHTTPConnection(httplib.HTTPConnection):
     def __init__(self, *args, **kwargs):
         httplib.HTTPConnection.__init__(self, *args, **kwargs)
         #GobjectHTTPConnection.__init__(*args, **kwargs)
-        self.debuglevel = 5
+        self.debuglevel = 0
         self.content = ""
+        self.count = 0
 
     #def connect(self):
     #    """Connect to the host and port specified in __init__."""
@@ -105,12 +119,15 @@ class GobjectHTTPConnection(httplib.HTTPConnection):
     def get(self, method, url, body=None, headers={}):
         self.request(method, url, body, headers)
         self.http_response = self.getresponse()
-        #self.sock.setblocking(False)
+        #self.http_response.sock.setblocking(False)
         self.idle_src = gobject.idle_add(self.idle_callback)
+        #self.timeout_src = gobject.timeout_add(100, self.timeout_callback)
 
     def finished(self):
-    #    log.debug("finished() content: %s" % self.content)
+        log.debug("removing callbacks")
+        log.debug("self.count: %s" % self.count)
         gobject.source_remove(self.idle_src)
+        gobject.source_remove(self.timeout_src)
 
     def error_callback(self, source, *args):
         print "oops", source, str(args)
@@ -125,10 +142,10 @@ class GobjectHTTPConnection(httplib.HTTPConnection):
         return True
 
 
+
 def get(path):
     http_conn = GobjectHTTPConnection(host="127.0.0.1", port=80)
-    print "http_conn", http_conn, dir(http_conn)
-    http_conn.set_debuglevel(5)
+    #http_conn.set_debuglevel(5)
     #http_conn.connect()
     #conn.request("GET", path)
     http_conn.get("GET", path)
@@ -149,10 +166,10 @@ def setup():
 def loop():
     gobject.idle_add(setup)
     ml = gobject.MainLoop()
-    #ml.run()
-    ctx = ml.get_context()
-    while ctx.pending():
-        ctx.iteration()
+    ml.run()
+    #ctx = ml.get_context()
+    #while ctx.pending():
+    #    ctx.iteration()
 
 
 def main():
@@ -161,5 +178,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print "exit"
+        sys.exit(1)
     sys.exit()
