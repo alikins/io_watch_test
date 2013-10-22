@@ -7,29 +7,83 @@ import httplib
 import socket
 import errno
 
-finished = None
-global finished
+import logging
+import debug_logger
 
 
-paths = ["/2/library/httplib.html"]
+log = logging.getLogger(__name__)
+
+#paths = ["/2/library/httplib.html"]
     #     "/2/glossary.html"]
 
-def idle_callback(*args):
-    print "\t\tidle", str(args)
-    global finished
-    if finished:
-        print "idle finished"
-        return False
-    time.sleep(.01)
-    return True
+paths = ["index.html",
+         "/"]
+
+paths = ['/quartz-scheduler/quartz/2.1.5/quartz-2.1.5-sources.jar',
+    '/quartz-scheduler/quartz/2.1.5/quartz-2.1.5-javadoc.jar',
+    '/quartz-scheduler/quartz/2.1.5/quartz-2.1.5.pom',
+    '/quartz-scheduler/quartz/2.1.5/quartz-2.1.5.jar',
+    '/quartz-scheduler/quartz/1.8.4/quartz-1.8.4-sources.jar',
+    '/quartz-scheduler/quartz/1.8.4/quartz-1.8.4.jar',
+    '/quartz-scheduler/quartz/1.8.4/quartz-1.8.4.pom',
+    '/quartz-scheduler/quartz/1.8.4/quartz-1.8.4-javadoc.jar',
+    '/quartz-scheduler/quartz/1.7.3/quartz-1.7.3.jar',
+    '/quartz-scheduler/quartz/1.7.3/quartz-1.7.3.pom',
+    '/quartz-scheduler/quartz/1.7.3/quartz-1.7.3-sources.jar',
+    '/bouncycastle/bcprov-jdk16/1.46/bcprov-jdk16-1.46.pom',
+    '/bouncycastle/bcprov-jdk16/1.46/bcprov-jdk16-1.46-sources.jar',
+    '/bouncycastle/bcprov-jdk16/1.46/bcprov-jdk16-1.46.jar',
+    '/bouncycastle/bcprov-jdk16/1.46/bcprov-jdk16-1.46-javadoc.jar',
+    '/bouncycastle/bcprov-jdk16/1.44/bcprov-jdk16-1.44.jar',
+    '/bouncycastle/bcprov-jdk16/1.44/bcprov-jdk16-1.44.pom',
+    '/bouncycastle/bcpg-jdk16/1.44/bcpg-jdk16-1.44.jar',
+    '/bouncycastle/bcpg-jdk16/1.44/bcpg-jdk16-1.44.pom',
+    '/bouncycastle/cp-bouncycastle/1.44/cp-bouncycastle-1.44.jar']
+
 
 class GobjectHTTPResponse(httplib.HTTPResponse):
-    pass
+    def __init__(self, *args, **kwargs):
+        httplib.HTTPResponse.__init__(self, *args, **kwargs)
+        self.setup_callbacks(*args)
+        self.content = ""
+        log.debug("self.fp %s" % self.fp)
+
+    def http_callback(self, source, condition, *args):
+        #log.debug("http_callback args %s %s %s" % (source, condition, self.length))
+        #path, http_conn, http_response, str(args)
+        #print source, path
+
+        try:
+            buf = source.read(2048)
+        except socket.error, v:
+            log.exception(v)
+            if v.errno == errno.EAGAIN:
+                log.debug("socket.error: %s" % v)
+                return True
+            raise
+
+        #log.debug("len(buf) %s" % len(buf))
+        #print http_conn, http_response, len(buf), http_response.length
+        #global finished
+        if buf != '':
+            self.content += buf
+    #        self.close()
+            return True
+
+        log.debug("----- end")
+        self.close()
+        log.debug("empty buf")
+        log.debug("len:%s len(buf): %s len(content): %s" % (self.length, len(buf), len(self.content)))
+        #self.finished()
+        return False
+
+    def setup_callbacks(self, *args):
+        self.http_src = gobject.io_add_watch(self.fp, gobject.IO_IN, self.http_callback, *args)
 
 
 class GobjectHTTPConnection(httplib.HTTPConnection):
 
-    #response_class = GobjectHTTPResponse
+    response_class = GobjectHTTPResponse
 
     def __init__(self, *args, **kwargs):
         httplib.HTTPConnection.__init__(self, *args, **kwargs)
@@ -37,98 +91,71 @@ class GobjectHTTPConnection(httplib.HTTPConnection):
         self.debuglevel = 5
         self.content = ""
 
-    def connect(self):
-        """Connect to the host and port specified in __init__."""
-        self.sock = socket.create_connection((self.host, self.port),
-                                               self.timeout)
+    #def connect(self):
+    #    """Connect to the host and port specified in __init__."""
+    #    self.sock = socket.create_connection((self.host, self.port),
+    #                                           self.timeout)
         #self.sock.setblocking(False)
 
-    def getresponse(self):
-        response = httplib.HTTPConnection.getresponse(self)
-        self.sock.setblocking(False)
-        return response
+    #def getresponse(self):
+    #    response = httplib.HTTPConnection.getresponse(self)
+        #self.sock.setblocking(False)
+    #    return response
 
-    def callback(self, source, *args):
-        global finished
-        #print "source", source
-        print "args", str(args)
-        buf = source.read(500)
-        print "buf", buf
-        if buf == '':
-            finished = True
-            print "callback finished"
-            return False
-        return True
-
-    def http_callback(self, source, condition, path, http_conn, http_response, *args):
-        print "http_callback args", source, condition, http_response.length
-        #path, http_conn, http_response, str(args)
-        #print source, path
-
-        try:
-            buf = source.read()
-        except socket.error, v:
-            if v.errno == errno.EAGAIN:
-                print "socket.error: %s" % v
-                return True
-            raise
-
-        print buf
-        #print http_conn, http_response, len(buf), http_response.length
-        #global finished
-        if buf != '':
-            self.content += buf
-            self.close()
-            return True
-
-        print http_response.length, len(buf), len(self.content)
-        self.finished()
-        return False
+    def get(self, method, url, body=None, headers={}):
+        self.request(method, url, body, headers)
+        self.http_response = self.getresponse()
+        #self.sock.setblocking(False)
+        self.idle_src = gobject.idle_add(self.idle_callback)
 
     def finished(self):
-        global finished
-        finished = True
-        print "foo", self.content
+    #    log.debug("finished() content: %s" % self.content)
+        gobject.source_remove(self.idle_src)
 
     def error_callback(self, source, *args):
         print "oops", source, str(args)
-        global finished
-        finished = True
         return False
+
+    def idle_callback(self, *args):
+        log.debug("\t idle callback: %s" % str(args))
+        if self.http_response.isclosed():
+            log.debug("idle finished")
+            return False
+        time.sleep(.01)
+        return True
 
 
 def get(path):
-    http_conn = GobjectHTTPConnection(host="www.redhat.com", port=80)
+    http_conn = GobjectHTTPConnection(host="127.0.0.1", port=80)
     print "http_conn", http_conn, dir(http_conn)
     http_conn.set_debuglevel(5)
     #http_conn.connect()
     #conn.request("GET", path)
-    http_conn.request("GET", path)
-    response = http_conn.getresponse()
-    http_conn.sock.setblocking(0)
-    gobject.io_add_watch(response.fp, gobject.IO_IN|gobject.IO_HUP, http_conn.http_callback, path, http_conn, response)
-#    gobject.io_add_watch(response.fp, gobject.IO_ERR, http_conn.error_callback)
+    http_conn.get("GET", path)
+    return False
 
 
 def setup():
     #fo = open("/tmp/foo", "r")
-    gobject.idle_add(idle_callback)
     #gobject.io_add_watch(fo, gobject.IO_IN, callback)
 #    gobject.io_add_watch(sys.stdin, gobject.IO_IN|gobject.IO_HUP, callback)
     for path in paths:
-        print "getting", path
-        get(path)
+        print "FOOOO getting", path
+        get('/test%s' % path)
+
+    return False
 
 
 def loop():
+    gobject.idle_add(setup)
     ml = gobject.MainLoop()
+    #ml.run()
     ctx = ml.get_context()
     while ctx.pending():
         ctx.iteration()
 
 
 def main():
-    setup()
     loop()
 #    gobject.MainLoop().run()
 
