@@ -48,8 +48,12 @@ class GobjectHTTPResponse(httplib.HTTPResponse):
         self.count = 0
         log.debug("self.fp %s" % self.fp)
         log.debug("sock %s" % sock)
-        sock.setblocking(False)
+        self.sock = sock
+        self.set_blocking(False)
         self.setup_callbacks(*args)
+
+    def set_blocking(self, blocking=True):
+        self.sock.setblocking(blocking)
 
     def http_callback(self, source, condition, *args):
         #print ".",
@@ -58,7 +62,7 @@ class GobjectHTTPResponse(httplib.HTTPResponse):
         #print source, path
 
         try:
-            buf = source.read(2048)
+            buf = source.read()
         except socket.error, v:
             log.exception(v)
             if v.errno == errno.EAGAIN:
@@ -66,10 +70,12 @@ class GobjectHTTPResponse(httplib.HTTPResponse):
                 return True
             raise
 
+
         #log.debug("len(buf) %s" % len(buf))
         #print http_conn, http_response, len(buf), http_response.length
         #global finished
         if buf != '':
+    #        print "%s read on %s %s" % (len(buf), method, url)
             self.content += buf
     #        self.close()
             return True
@@ -91,7 +97,9 @@ class GobjectHTTPResponse(httplib.HTTPResponse):
 
     def setup_callbacks(self, *args):
         self.http_src = gobject.io_add_watch(self.fp, gobject.IO_IN, self.http_callback, *args)
-        self.timeout_src = gobject.timeout_add(100, self.timeout_callback)
+        self.timeout_src = gobject.timeout_add(10, self.timeout_callback)
+
+        self.set_blocking(False)
 
 
 class GobjectHTTPConnection(httplib.HTTPConnection):
@@ -119,6 +127,7 @@ class GobjectHTTPConnection(httplib.HTTPConnection):
     def get(self, method, url, body=None, headers={}):
         self.request(method, url, body, headers)
         self.http_response = self.getresponse()
+#        self.http_response.setup_callbacks(method, url)
         #self.http_response.sock.setblocking(False)
         self.idle_src = gobject.idle_add(self.idle_callback)
         #self.timeout_src = gobject.timeout_add(100, self.timeout_callback)
@@ -138,14 +147,14 @@ class GobjectHTTPConnection(httplib.HTTPConnection):
         if self.http_response.isclosed():
             log.debug("idle finished")
             return False
-        time.sleep(.01)
+        time.sleep(.3)
         return True
 
 
 
 def get(path):
     http_conn = GobjectHTTPConnection(host="127.0.0.1", port=80)
-    #http_conn.set_debuglevel(5)
+    http_conn.set_debuglevel(5)
     #http_conn.connect()
     #conn.request("GET", path)
     http_conn.get("GET", path)
@@ -157,7 +166,6 @@ def setup():
     #gobject.io_add_watch(fo, gobject.IO_IN, callback)
 #    gobject.io_add_watch(sys.stdin, gobject.IO_IN|gobject.IO_HUP, callback)
     for path in paths:
-        print "FOOOO getting", path
         get('/test%s' % path)
 
     return False
