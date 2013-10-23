@@ -41,6 +41,8 @@ paths = ['/quartz-scheduler/quartz/2.1.5/quartz-2.1.5-sources.jar',
     '/bouncycastle/cp-bouncycastle/1.44/cp-bouncycastle-1.44.jar']
 
 
+READ_SIZE = 1024 * 32
+
 class GobjectHTTPResponse(httplib.HTTPResponse):
     def __init__(self, sock, *args, **kwargs):
         httplib.HTTPResponse.__init__(self, sock, *args, **kwargs)
@@ -48,12 +50,26 @@ class GobjectHTTPResponse(httplib.HTTPResponse):
         self.count = 0
         log.debug("self.fp %s" % self.fp)
         log.debug("sock %s" % sock)
-        self.sock = sock
-        self.set_blocking(False)
+        #self.sock = sock
+    #    self.set_blocking(False)
         self.setup_callbacks(*args)
+        #sock.setblocking(False)
+
+    def begin(self):
+        # HTTPResponse.begin doesnt really deal well with non
+        # blocking sockets (some docs point finger at it's use of readline)
+        # so, get the response header, with the content length (ie, begin)
+        # then set the socket to non blocking
+        httplib.HTTPResponse.begin(self)
+        self.set_blocking(False)
 
     def set_blocking(self, blocking=True):
-        self.sock.setblocking(blocking)
+        # HTTPResponse uses a file object like interface to it's socket
+        #  (socket._fileobject), so this sets the response objects
+        # file object's socket to be non blocking.
+        # Almost surely a better way to do this, and it will also depend
+        # on the httplib implemtation (ie, httpslib stuff)
+        self.fp._sock.setblocking(blocking)
 
     def http_callback(self, source, condition, *args):
         #print ".",
@@ -61,15 +77,18 @@ class GobjectHTTPResponse(httplib.HTTPResponse):
         #path, http_conn, http_response, str(args)
         #print source, path
 
+        # it's faster if we just let it read till it blocks, but setting
+        # a read size offers more events.
+        #READ_SIZE=-1
+
         try:
-            buf = source.read()
+            buf = source.read(READ_SIZE)
         except socket.error, v:
-            log.exception(v)
+            #log.exception(v)
             if v.errno == errno.EAGAIN:
                 log.debug("socket.error: %s" % v)
                 return True
             raise
-
 
         #log.debug("len(buf) %s" % len(buf))
         #print http_conn, http_response, len(buf), http_response.length
@@ -96,10 +115,11 @@ class GobjectHTTPResponse(httplib.HTTPResponse):
         return True
 
     def setup_callbacks(self, *args):
+        # currently no hup, or error callbacks
         self.http_src = gobject.io_add_watch(self.fp, gobject.IO_IN, self.http_callback, *args)
         self.timeout_src = gobject.timeout_add(10, self.timeout_callback)
 
-        self.set_blocking(False)
+    #    self.set_blocking(False)
 
 
 class GobjectHTTPConnection(httplib.HTTPConnection):
@@ -128,9 +148,10 @@ class GobjectHTTPConnection(httplib.HTTPConnection):
         self.request(method, url, body, headers)
         self.http_response = self.getresponse()
 #        self.http_response.setup_callbacks(method, url)
-        #self.http_response.sock.setblocking(False)
+#        self.http_response.set_blocking(False)
         self.idle_src = gobject.idle_add(self.idle_callback)
         #self.timeout_src = gobject.timeout_add(100, self.timeout_callback)
+ #       self.http_response.set_blocking(False)
 
     def finished(self):
         log.debug("removing callbacks")
@@ -173,11 +194,19 @@ def setup():
 
 def loop():
     gobject.idle_add(setup)
+
+    # need an exit handler...
     ml = gobject.MainLoop()
-    ml.run()
-    #ctx = ml.get_context()
-    #while ctx.pending():
-    #    ctx.iteration()
+    #ml.run()
+
+    # we could run a mainloop.run here, but
+    # we need to have a way out
+    #
+    # this just queues some events, and exits when
+    # they (and the io events from the io_add_watch) are done
+    ctx = ml.get_context()
+    while ctx.pending():
+        ctx.iteration()
 
 
 def main():
