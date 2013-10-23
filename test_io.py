@@ -144,7 +144,6 @@ class NonBlockingHTTPResponse(httplib.HTTPResponse):
         # loop iteration here till finished callback?
 
     def finished_callback(self):
-        print "BLOOOP"
         # return all the read content
         self.content = self.gresponse.content
         self._finished_callback()
@@ -183,11 +182,6 @@ class GobjectHTTPConnection(httplib.HTTPConnection):
         self.idle_src = gobject.idle_add(self.idle_callback)
         self.http_response._finished_callback = self.read_finished_callback
         self.http_response.do_read()
-        print "wip - len(content)", len(self.content)
-#        self.http_response.setup_callbacks(method, url)
-#        self.http_response.set_blocking(False)
-        #self.timeout_src = gobject.timeout_add(100, self.timeout_callback)
- #       self.http_response.set_blocking(False)
 
     def read_finished_callback(self):
 
@@ -206,30 +200,37 @@ class GobjectHTTPConnection(httplib.HTTPConnection):
         if self.http_response.isclosed():
             log.debug("idle finished")
             return False
-        time.sleep(.3)
+       # time.sleep(.3)
         return True
 
 
 def get(path):
     http_conn = GobjectHTTPConnection(host="127.0.0.1", port=80)
     http_conn.set_debuglevel(5)
-    #http_conn.connect()
-    #conn.request("GET", path)
     http_conn.start_get("GET", path)
     return False
 
 
 def setup():
-    #fo = open("/tmp/foo", "r")
-    #gobject.io_add_watch(fo, gobject.IO_IN, callback)
-#    gobject.io_add_watch(sys.stdin, gobject.IO_IN|gobject.IO_HUP, callback)
     for path in paths:
         get('/test%s' % path)
+
+    gobject.io_add_watch(sys.stdin, gobject.IO_IN | gobject.IO_HUP, read_stdin_callback)
 
     return False
 
 
+def read_stdin_callback(source, condition, *args):
+    buf = source.read(8192)
+    #print "STDIN:", condition, buf
+    if buf == '':
+        print "done read stdin"
+        return False
+    return True
+
+
 def loop():
+
     gobject.idle_add(setup)
 
     # need an exit handler...
