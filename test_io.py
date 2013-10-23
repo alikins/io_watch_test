@@ -6,10 +6,12 @@ import time
 import httplib
 import socket
 import errno
-
 import logging
+
 import debug_logger
 
+import signal
+signal.signal(signal.SIGINT, signal.SIG_DFL)
 
 log = logging.getLogger(__name__)
 
@@ -43,17 +45,109 @@ paths = ['/quartz-scheduler/quartz/2.1.5/quartz-2.1.5-sources.jar',
 
 READ_SIZE = 1024 * 32
 
-class GobjectHTTPResponse(httplib.HTTPResponse):
-    def __init__(self, sock, *args, **kwargs):
-        httplib.HTTPResponse.__init__(self, sock, *args, **kwargs)
+
+class GObjectHTTPResponseReader(gobject.GObject):
+    def __init__(self, sock, read_amt=-1, *args, **kwargs):
+        gobject.GObject.__init__(self)
+        # probably move to a StringIO
         self.content = ""
         self.count = 0
-        log.debug("self.fp %s" % self.fp)
-        log.debug("sock %s" % sock)
-        #self.sock = sock
-    #    self.set_blocking(False)
-        self.setup_callbacks(*args)
-        #sock.setblocking(False)
+        self.read_amt = read_amt
+        self.read_buf = ""
+        #self.response = NonBlockingHTTPResponse(sock, *args, **kwargs)
+
+    def timeout_callback(self, response):
+        self.count += 1
+        if response.isclosed():
+            print "request hit timeout %s times" % self.count
+            return False
+        #print "timeout: %s" % self.count
+        return True
+
+    def http_callback(self, source, condition, response, read_amt=READ_SIZE, *args):
+        #print ".",
+        #log.debug("http_callback args %s %s %s" % (source, condition, self.length))
+        #path, http_conn, http_response, str(args)
+        #print source, path
+
+        # it's faster if we just let it read till it blocks, but setting
+        # a read size offers more events.
+        #READ_SIZE=-1
+
+        self.read_buf = ""
+        buf = ""
+        try:
+            buf = source.read(read_amt)
+        except socket.error, v:
+            #log.exception(v)
+            if v.errno == errno.EAGAIN:
+                log.debug("socket.error: %s" % v)
+                return True
+            raise
+
+        if read_amt >= 0 and buf >= read_amt:
+            log.debug("read up to read_amt %s %s" % (read_amt, len(buf)))
+            self.content += buf
+            self.read_buf = buf
+            return False
+
+        #log.debug("len(buf) %s" % len(buf))
+        #print http_conn, http_response, len(buf), http_response.length
+        #global finished
+        if buf != '':
+    #        print "%s read on %s %s" % (len(buf), method, url)
+            self.content += buf
+    #        self.close()
+            return True
+
+        log.debug("----- end")
+        response.close()
+        log.debug("empty buf")
+        log.debug("len:%s len(buf): %s len(content): %s" % (response.length, len(buf), len(self.content)))
+        self.finished()
+        return False
+
+    def setup_read_callback(self, response):
+        # currently no hup, or error callbacks
+        self.http_src = gobject.io_add_watch(response.fp, gobject.IO_IN, self.http_callback, response, self.read_amt)
+
+    def setup_timeout_callback(self, response):
+        self.timeout_src = gobject.timeout_add(10, self.timeout_callback, response)
+
+    def remove_timeout_callback(self):
+        gobject.source_remove(self.timeout_src)
+
+    def finished(self):
+        self.remove_timeout_callback()
+        if self.finished_callback:
+            self.finished_callback()
+
+gobject.type_register(GObjectHTTPResponseReader)
+
+
+class NonBlockingHTTPResponse(httplib.HTTPResponse):
+    def __init__(self, sock, *args, **kwargs):
+        httplib.HTTPResponse.__init__(self, sock, *args, **kwargs)
+        log.debug("NonBlocking self.fp %s" % (self.fp))
+        log.debug("NonBlocking sock %s" % sock)
+        self.gresponse = GObjectHTTPResponseReader(sock, *args, **kwargs)
+
+    # need a finish callback
+    def do_read(self, amt=-1):
+        # read up to amt from the response
+        # note if called with amt, the callback is removed, and needs to
+        # be setup again
+        self.gresponse.read_amt = amt
+        self.gresponse.setup_timeout_callback(self)
+        self.gresponse.setup_read_callback(self)
+        self.gresponse.finished_callback = self.finished_callback
+        # loop iteration here till finished callback?
+
+    def finished_callback(self):
+        print "BLOOOP"
+        # return all the read content
+        self.content = self.gresponse.content
+        self._finished_callback()
 
     def begin(self):
         # HTTPResponse.begin doesnt really deal well with non
@@ -71,60 +165,10 @@ class GobjectHTTPResponse(httplib.HTTPResponse):
         # on the httplib implemtation (ie, httpslib stuff)
         self.fp._sock.setblocking(blocking)
 
-    def http_callback(self, source, condition, *args):
-        #print ".",
-        #log.debug("http_callback args %s %s %s" % (source, condition, self.length))
-        #path, http_conn, http_response, str(args)
-        #print source, path
-
-        # it's faster if we just let it read till it blocks, but setting
-        # a read size offers more events.
-        #READ_SIZE=-1
-
-        try:
-            buf = source.read(READ_SIZE)
-        except socket.error, v:
-            #log.exception(v)
-            if v.errno == errno.EAGAIN:
-                log.debug("socket.error: %s" % v)
-                return True
-            raise
-
-        #log.debug("len(buf) %s" % len(buf))
-        #print http_conn, http_response, len(buf), http_response.length
-        #global finished
-        if buf != '':
-    #        print "%s read on %s %s" % (len(buf), method, url)
-            self.content += buf
-    #        self.close()
-            return True
-
-        log.debug("----- end")
-        self.close()
-        log.debug("empty buf")
-        log.debug("len:%s len(buf): %s len(content): %s" % (self.length, len(buf), len(self.content)))
-        #self.finished()
-        return False
-
-    def timeout_callback(self):
-        self.count += 1
-        if self.isclosed():
-            print "request hit timeout %s times" % self.count
-            return False
-        #print "timeout: %s" % self.count
-        return True
-
-    def setup_callbacks(self, *args):
-        # currently no hup, or error callbacks
-        self.http_src = gobject.io_add_watch(self.fp, gobject.IO_IN, self.http_callback, *args)
-        self.timeout_src = gobject.timeout_add(10, self.timeout_callback)
-
-    #    self.set_blocking(False)
-
 
 class GobjectHTTPConnection(httplib.HTTPConnection):
 
-    response_class = GobjectHTTPResponse
+    response_class = NonBlockingHTTPResponse
 
     def __init__(self, *args, **kwargs):
         httplib.HTTPConnection.__init__(self, *args, **kwargs)
@@ -133,31 +177,25 @@ class GobjectHTTPConnection(httplib.HTTPConnection):
         self.content = ""
         self.count = 0
 
-    #def connect(self):
-    #    """Connect to the host and port specified in __init__."""
-    #    self.sock = socket.create_connection((self.host, self.port),
-    #                                           self.timeout)
-        #self.sock.setblocking(False)
-
-    #def getresponse(self):
-    #    response = httplib.HTTPConnection.getresponse(self)
-        #self.sock.setblocking(False)
-    #    return response
-
-    def get(self, method, url, body=None, headers={}):
+    def start_get(self, method, url, body=None, headers={}):
         self.request(method, url, body, headers)
         self.http_response = self.getresponse()
+        self.idle_src = gobject.idle_add(self.idle_callback)
+        self.http_response._finished_callback = self.read_finished_callback
+        self.http_response.do_read()
+        print "wip - len(content)", len(self.content)
 #        self.http_response.setup_callbacks(method, url)
 #        self.http_response.set_blocking(False)
-        self.idle_src = gobject.idle_add(self.idle_callback)
         #self.timeout_src = gobject.timeout_add(100, self.timeout_callback)
  #       self.http_response.set_blocking(False)
 
-    def finished(self):
+    def read_finished_callback(self):
+
         log.debug("removing callbacks")
         log.debug("self.count: %s" % self.count)
         gobject.source_remove(self.idle_src)
-        gobject.source_remove(self.timeout_src)
+        #self.content = self.http_response.content
+        log.debug("finished  with len(content): %s" % len(self.http_response.content))
 
     def error_callback(self, source, *args):
         print "oops", source, str(args)
@@ -172,13 +210,12 @@ class GobjectHTTPConnection(httplib.HTTPConnection):
         return True
 
 
-
 def get(path):
     http_conn = GobjectHTTPConnection(host="127.0.0.1", port=80)
     http_conn.set_debuglevel(5)
     #http_conn.connect()
     #conn.request("GET", path)
-    http_conn.get("GET", path)
+    http_conn.start_get("GET", path)
     return False
 
 
